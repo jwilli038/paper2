@@ -1,0 +1,363 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jun  3 21:26:18 2021
+
+@author: jwill
+"""
+
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Feb 14 10:20:48 2020
+@author: jwilliams
+"""
+#from utilities import nason 
+#from M import m
+from jwilliThresh8 import nasob4
+import math
+import pandas as pd 
+import matplotlib.pyplot as plt
+import pywt
+import numpy as np 
+from numpy import linalg as LA
+import bisect 
+import csv 
+import random
+import numpy as np
+from skimage.restoration import denoise_wavelet
+from JThresh import JThresh
+#from M import 
+from Mplus import mplus
+from M_method import m
+#from nasonblock import nasob
+
+def wtest(s, p, sig, e, runs):
+    test, signal = wtc(s, p, sig, e, runs)
+    MSEV = []; MSEJ = []; MSEM = []; MSEM3 = []
+    j = int(np.log2(s)-4)
+    for i in range(np.shape(test)[0]):
+        #MSEJ.append(np.sum((JThresh(test[i])-signal)**2))
+        try:
+            MSEJ.append(np.sum((mplus(test[i])-signal)**2))
+            #MSEJ.append(np.sum((nasob4(test[i])[0]-signal)**2))
+            #MSEJ.append(np.sum((JThresh(test[i])-signal)**2))
+            #MSEJ.append(np.sum((m(test[i])-signal)**2))
+            #MSEJ.append(np.sum((nason(test[i])-signal)**2))
+            #bS = denoise_wavelet(test[i], wavelet = 'db8', mode = 'soft', wavelet_levels = j, method = "BayesShrink", rescale_sigma='True')
+            #MSEJ.append(np.sum((bS-signal)**2))
+            vShrink = denoise_wavelet(test[i], wavelet = 'db8', mode = 'soft', wavelet_levels = 4, method = "VisuShrink", rescale_sigma='True') 
+            #sigma = np.std(test[i])
+            #I = np.shape(test[i])[0]
+            #uni = sigma*np.sqrt(np.log2(I))
+            #wave_levels = int(np.round(np.log2(I)-4))
+            #vShrink = v(test[i], uni,wave_levels)
+            MSEV.append(np.sum((np.hstack(vShrink).T-signal)**2))       
+        except:
+            i = i-1
+    MSEJ = np.asarray(MSEJ); #MSEM = np.asarray(MSEM); 
+    MSEV = np.asarray(MSEV)
+    em = np.mean(MSEJ/MSEV); sdm = np.std(MSEJ/MSEV);  #e2 = np.mean(MSEM3/MSEV); sd2 = np.std(MSEM3/MSEV)
+    #return test[i], signal, e, sd
+    #
+    return em, sdm
+
+def v(signal, uni,levels):
+    sig = np.hstack(signal)
+    coeffs = pywt.wavedec(sig,'db6',level=levels)
+    for j in range(1,np.shape(coeffs)[0]):
+        for i in range(np.shape(coeffs[j])[0]):
+            if np.abs(coeffs[j][i])<=uni:
+                coeffs[j][i]=0
+    return pywt.waverec(coeffs,'db6')
+        
+
+def wtc(s, p, sig, e, runs):            
+    powerCase = {
+        1: 3,
+        2: 5
+        }
+    
+    signalCase = {
+        1: Blip(s),
+        2: Blocks(s),
+        3: Bumps(s),
+        4: Corner(s),
+        5: Doppler(s),
+        6: HeaviSine(s),
+        7: Spikes(s), 
+        8: Wave(s)
+            }
+    
+    
+    
+    Test = []
+    signal = signalCase[sig];
+    #sp = (np.sum(np.abs(signal))*(np.sum(np.abs(signal))/np.size(signal))) 
+    #np.mean(signal**2)
+    power = powerCase[p];
+    #powerdb = powerCase[p];
+    #power = 10*np.log10(powerdb)
+    sp = np.sum(signal**2)
+    #std = (sp/power)**(.5)
+    std = 1
+    for r in range(runs):
+        #error needs to be defined each run
+        errorCase = {
+        1: np.random.standard_t(3,s),
+        2: np.random.standard_cauchy(s),
+        3: np.random.lognormal(0,1,s),
+        4: np.random.normal(0,std,s)
+        }
+        error = errorCase[e]
+        if e == 1:
+            t3_noise = error
+            t3_noise /= np.sqrt(np.var(t3_noise, ddof=1)/3)
+            t3_errors = 1 * error + 0
+            # Calculate the signal power and noise power
+            signal_power = np.sum(np.square(signal))
+            noise_power = np.sum(np.square(t3_errors))
+            # Calculate the desired noise power to achieve SNR 5
+            desired_noise_power = signal_power / power
+            scaled_t3_errors = np.sqrt(desired_noise_power / noise_power) * t3_errors
+            # Add the scaled errors to the signal
+            noisy_signal = signal + scaled_t3_errors
+            Test.append(noisy_signal)
+        elif e == 3:
+            lognormal_noise = error-np.exp(1**2/2)
+            signal_power = np.sum(np.square(signal))
+            noise_power = np.sum(np.square(lognormal_noise))
+            desired_noise_power = signal_power / power
+            # Scale the lognormal noise to achieve the desired noise power
+            scaled_lognormal_noise = np.sqrt(desired_noise_power / noise_power) * lognormal_noise
+            # Add the scaled noise to the signal
+            noisy_signal = signal + scaled_lognormal_noise
+            Test.append(noisy_signal)
+            '''
+            if power == 3:
+                #sigmac =[0.0031367247217415884, 0.000910370025031897, 0.29111342522214934, 0.07377080559899965, 0.15924181683861788, 0.9469635227821154, 1.3057795847881395, 0.0024432028712548645];
+                sigma = [0.31188951744034477,0.8373942832695809,0.3745745780875149,0.0852356646480141,0.1667144062839317,0.9548256486413749,1.403985692664824,0.29113278703204315]; 
+            elif power ==5: 
+                sigma = [0.24931304856524558,0.7403899269316094,0.30245381537554156,0.0660101801898945,0.1286579585220817,0.8526998402288009,1.300888557369712,0.22854087704434362];
+            ln = np.random.lognormal(0,sigma[sig-1],s)
+            lnc = ln-np.mean(ln)
+            test = signal+lnc
+            Test.append(test)
+            '''
+        else:
+             k = sp/(power*np.sum(error**2))
+        #npow = np.sum(np.abs(error))*(np.sum(np.abs(error))/np.size(error))
+        #k = (sp/npow)*(10**(-power/10))
+        #std = (sp/npow)**(.5)
+             Test.append(signal+np.sqrt(k)*error)
+        #Test.append(signal+k*error)
+    return Test, signal
+
+                    
+def Blockstest(size):
+    #l = 1024
+    #s = np.zeros((l,100))
+    b = Blocks(size)
+    Spower = np.sum(np.abs(b))*(np.sum(np.abs(b))/np.size(b))
+    #n = (np.random.standard_cauchy(2048))
+    #n = np.random.lognormal(0,1,size)
+    n = np.random.normal(0,1,size)
+    Npower = np.sum(np.abs(n))*(np.sum(np.abs(n))/np.size(n))
+    k = (Spower/Npower)*(10**(-5/10))
+    return b+n*k
+    '''
+   
+    for i in range(1): 
+        B = Blocks(size)
+        e = np.random.standard_t(1,size)
+        #e = np.random.standard_cauchy(2048)
+        #e = np.random.lognormal(size=l)
+        #e = np.random.normal(0,1,2048)
+        #e[(e>50)]=0
+        #e[e<-50]=0
+        s = B+e*k
+    #s[:,50] = BlocksO()+np.random.normal(0,1,2048)*.5
+    #e = wanovaBoxPlot(s.T)
+    #e = 0
+    return s
+    '''
+
+def Bumpstest(size):
+    b = Bumps(size)
+    Spower = np.sum(np.abs(b))*(np.sum(np.abs(b))/np.size(b))
+    #n = (np.random.standard_cauchy(2048))
+    #n = np.random.lognormal(0,1,size)
+    n = np.random.normal(0,1,1024)
+    Npower = np.sum(np.abs(n))*(np.sum(np.abs(n))/np.size(n))
+    k = (Spower/Npower)*(10**(-5/10))
+    return b+k*n
+'''    
+for i in range(100): 
+        B = Bumps()
+        e = np.random.normal(0,1,2048)
+        #e = np.random.standard_cauchy(2048)
+        #e[(e>50)]=0
+        #e[e<-50]=0
+        #e = np.random.lognormal(0,1,2048)
+        s[:,i] = B+e*k
+    e = 0
+    #e = wanovaBoxPlot(s.T)
+    return s,e
+'''
+def HeaviSinetest():
+    s = np.zeros((2048,100))
+    b = HeaviSine()
+    Spower = sum(abs(b))*(sum(abs(b))/np.size(b))
+    #n = (np.random.standard_cauchy(2048))
+    #n = np.random.lognormal(0,1,2048)
+    n = np.random.normal(0,1,2048)
+    Npower = sum(abs(n))*(sum(abs(n))/np.size(n))
+    k = (Spower/Npower)*(10**(-5/10))
+    s = np.zeros((2048,100))
+    for i in range(100): 
+        B = HeaviSine()
+        e = np.random.normal(0,1,2048)
+        #e = np.random.standard_cauchy(2048)
+        #e[(e>50)]=0
+        #e[e<-50]=0
+        #e = np.random.lognormal(0,1,2048)
+        s[:,i] = B+e*k
+    #e = compWanova2(s.T)
+    e = 0
+    return s,e
+
+def Dopplertest():
+    s = np.zeros((2048,100))
+    b = Doppler()
+    Spower = sum(abs(b))*(sum(abs(b))/np.size(b))
+    #n = (np.random.standard_cauchy(2048))
+    #n = np.random.lognormal(0,1,2048)
+    n = np.random.normal(0,1,2048)
+    Npower = sum(abs(n))*(sum(abs(n))/np.size(n))
+    k = (Spower/Npower)*(10**(-5/10))
+    s = np.zeros((2048,100))
+    for i in range(100): 
+        B = Doppler()
+        e = np.random.normal(0,1,2048)
+        #e = np.random.standard_cauchy(2048)
+        #e[(e>50)]=0
+        #e[e<-50]=0
+        e = np.random.lognormal(0,1,2048)
+        s[:,i] = B+e*k
+    #e = compWanova2(s.T)
+    e=0
+    return s,e
+
+def Step():
+     t= np.linspace(0, 1, 2048)
+     I = np.ones(2048)
+     for i in range(np.size(t)):
+         if t[i] <= (1/3):
+             I[i]=0
+         if t[i] >= 0.75:
+             I[i] = 0
+     f = .2+.6*I*t
+     return f;
+    
+def Wave(size):
+    import numpy as np; import math
+    t= np.linspace(0, 1, size)
+    f = .5+.2*np.cos(4*np.pi*t)+.1*np.cos(24*np.pi*t)
+    return f;
+
+def Blocks(size):
+    t_j = [0.1, 0.13, 0.15, 0.23, 0.25, 0.4,0.44,0.65,0.76,0.78, 0.81]
+    h_j = [4,-5,3,-4,5,-4.2,2.1,4.3,-3.1,2.1,-4.2]
+    t= np.linspace(0, 1, size)
+    temp = np.zeros(np.size(t_j))
+    f = np.zeros((np.size(t_j),np.size(t)))
+    for j in range(np.size(t_j)):
+        f[j,:]  = h_j[j]*((1+np.sign(t-t_j[j]))/2)
+    return sum(f)             
+    
+def BlocksO():
+    t_j = [0.1, 0.13, 0.15, 0.23, 0.25, 0.4,0.44,0.65,0.76,0.78, 0.81]
+    h_j = [10,-5,3,-4,5,-4.2,2.1,4.3,-3.1,2.1,-4.2]
+    t= np.linspace(0, 1, 1024)
+    temp = np.zeros(np.size(t_j))
+    f = np.zeros((np.size(t_j),np.size(t)))
+    for j in range(np.size(t_j)):
+        f[j,:]  = h_j[j]*((1+np.sign(t-t_j[j]))/2)
+    return sum(f)  
+
+def Bumps(size):
+    t= np.linspace(0, 1, size)
+    t_j = [0.1, 0.13, 0.15, 0.23, 0.25, 0.4,0.44,0.65,0.76,0.78, 0.81]
+    h_j = [4,5,3,4,5, 4.2, 2.1,4.3,3.1,5.1,4.2]
+    w_j = [.005,.005,.006,.01,.01,.03,.01,.01,.005,.008,.005]
+    f = np.zeros((np.size(t_j),np.size(t)))
+    for j in range(np.size(t_j)):
+        f[j,:]  = h_j[j]*((1+abs((t-t_j[j])/w_j[j]))**-4)
+    return sum(f) 
+
+def BumpsO():
+    t= np.linspace(0, 1, 2048)
+    t_j = [0.125, 0.15, 0.175, 0.23, 0.25, 0.4,0.44,0.65,0.76,0.78, 0.81]
+    h_j = [4000000000000,5,3,4,5, 4.2, 2.1,4.3,3.1,5.1,4.2]
+    w_j = [.005,.005,.006,.01,.01,.03,.01,.01,.005,.008,.005]
+    f = np.zeros((np.size(t_j),np.size(t)))
+    for j in range(np.size(t_j)):
+        f[j,:]  = h_j[j]*((1+abs((t-t_j[j])/w_j[j]))**-4)
+    return sum(f) 
+
+def HeaviSine(size):
+     t= np.linspace(0, 1, size)
+     f = np.zeros(np.size(t))
+     f = 9*np.sin(4*np.pi*t)-np.sign(t-.3)-np.sign(.72-t)
+     return 0.5*f
+     
+    
+def Doppler(size):
+    t = np.linspace(0,1, size)
+    f = (t*(1-t))**(.5)*np.sin((2*np.pi)*((1+.05)/(t+.05)))
+    return f
+
+def Spikes(size):
+    x = np.linspace(0,1,size)
+    f = 15.6676*(np.exp(-500*(x-.23)**2)+2*np.exp(-2000*(x-.33)**2)+4*np.exp(-8000*(x-.47)**2)+3*np.exp(-160000*(x-.69)**2)+np.exp(-32000*(x-.83)**2))
+    return f
+
+def Corner(size):
+    t = np.linspace(0,1,size)
+    t1 = np.linspace(0,1,size); t1[t1>.5]=0
+    t2 = np.linspace(0,1,size); t2[t2<=.5]=0; t2[t2>.8]=0
+    t3 = np.linspace(0,1,size); t3[t3<=.8]=0;
+    f = 62.387*((10*(t**3)*(1-4*(t**2))*t1)+(3*(.125-(t**3))*(t**4)*t2)+(59.443*(t-1)**3*t3))
+    return .022*f
+    
+def Blip(size):
+    t = np.linspace(0,1,size)
+    t1 = np.linspace(0,1,size); t1[t1>.8]=0; t1[t1>0]=1; t1[0]=1;
+    t2 = np.linspace(0,1,size); t2[t2<=.8]=0; t2[t2>0]=1;
+    f = ((.32+.6*t+.3*np.exp(-100*(t-.3)**2))*t1 + (-.28+.6*t+.3*np.exp(-100*(t-1.3)**2))*t2)
+    return f
+    return f
+
+def snr(size, power, sig):
+    T,S = wtc(size,power,sig,3,1)
+    # Generate a signal with random values between 0 and 1
+    n = 512
+    signal = np.random.rand(n)
+    signal = S
+    # Generate lognormal noise with mean 0 and standard deviation 1
+    mean = 0
+    stddev = 1
+    lognormal_noise = np.random.lognormal(mean, stddev, n) - np.exp(mean + stddev**2/2)
+    
+    # Calculate the signal power and noise power
+    signal_power = np.sum(np.square(signal))
+    noise_power = np.sum(np.square(lognormal_noise))
+    
+    # Calculate the desired noise power to achieve SNR 5
+    desired_noise_power = signal_power / 3
+    
+    # Scale the lognormal noise to achieve the desired noise power
+    scaled_lognormal_noise = np.sqrt(desired_noise_power / noise_power) * lognormal_noise
+    
+    # Add the scaled noise to the signal
+    noisy_signal = signal + scaled_lognormal_noise
+   
+    return noisy_signal
