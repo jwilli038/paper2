@@ -1,0 +1,279 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu May 11 13:42:52 2023
+
+@author: jwill
+"""
+import numpy as np 
+import pywt 
+from scipy.optimize import differential_evolution
+import copy
+from scipy.stats import qmc
+from hmmlearn import hmm
+
+
+def m(signal):
+    sig = np.hstack(signal)
+    sig_length = np.size(sig)
+    wave_levels = int(np.round(np.log2(sig_length)-4)-1)
+    wave_levels=4
+    Lam = np.zeros([wave_levels])
+    vM = np.zeros([wave_levels])
+    e, o = Split1D(sig)
+    coeffsE = pywt.wavedec(e,'db8',level=4)
+    coeffsO = pywt.wavedec(o,'db8',level=4)
+    #print(wave_levels,np.shape(coeffsE))
+    BE, BO, val = Bins(coeffsE,coeffsO)
+    M, SE, SO = Mod(BE, BO, 2)
+    G = np.max(np.hstack(val))
+    fun = 10000000000
+    #Run through all levels
+    state = 2
+    for j in range(wave_levels-1,-1,-1):
+        print(j)
+        #args = BE, BO, coeffsE, coeffsO, e, o, j, StatesE, StatesO
+        #Create the input to DE below 
+       
+        #Calculate the M lamda values 
+        tg, tgfun = brutesolver(Lam, sig, BE,BO, coeffsE, coeffsO, e, o, j, val,G, 0, SE, SO, state)
+        #Calculate the HMM lamda values 
+        if tgfun<=fun:
+            Lam[j] = tg
+            fun = tgfun
+            if tg >= np.max(val[j]):
+                vM[j] = 1
+                print('maxed')
+        else:
+            Lam[j] = Lam[j-1]
+            #print("previous L win")
+    # Run through each level
+    for j in range(wave_levels-1,-1,-1):
+            tg, tgfun = brutesolver(Lam, sig, BE,BO, coeffsE, coeffsO, e, o, j, val,G, 1, SE, SO, state)
+            if tgfun <= fun:
+                Lam[j] = tg
+                fun = tgfun
+                if tg >= np.max(val[j]):
+                    vM[j] = 1
+                 
+    #Run through each level with hidden markov models, solve each one independently 
+    LamH = np.zeros([wave_levels,2])
+    vMH = np.zeros([wave_levels,2])
+    for j in range(wave_levels-1,-1,-1):
+            tg1, tgfun1 = brutesolver(Lam, sig, BE,BO, coeffsE, coeffsO, e, o, j, val,G, 2, SE, SO, 0)
+            tg2, tgfun2 = brutesolver(Lam, sig, BE,BO, coeffsE, coeffsO, e, o, j, val,G, 2, SE, SO, 1)
+            if tgfun1 <= fun:
+                LamH[j,0] = tg1
+                fun = tgfun1
+                if tg1 >= np.max(val[j]):
+                    vMH[j,0] = 1
+            if tgfun2 <= fun:
+                LamH[j,0] = tg2
+                fun = tgfun1
+                if tg2 >= np.max(val[j]):
+                    vMH[j,1] = 1
+                    
+    #reconstruct 
+    print(LamH)
+    r = rebuild(sig, Lam, wave_levels, coeffsE,vM)
+    return r
+    
+    
+def rebuild(signal, lam, wave_lengths, coeffsE,vM):
+    coeffs = pywt.wavedec(signal,'db8',level=4)   
+    #print(np.shape(coeffs))
+    for j in range(1,wave_lengths+1):
+        w = int(np.round(np.log(np.size(coeffsE[j]))))
+        #w = int(round(2*np.log(np.size(coeffsE[j]))))
+        L =  ((1-(np.log10(2)/np.log10(np.size(signal)/2**(j))))**(-1))*lam[j-1]
+        for block in range(0,np.size(coeffs[j])+w,w):
+            end = np.size(coeffs[j])-(block+w)
+            if end < 0:
+                w = w+end
+            val = np.sum((coeffs[j][block:block+w])**2)
+            if  val <= L or vM[j-1]==1:
+                coeffs[j][block:block+w]=coeffs[j][block:block+w]*0 
+    return pywt.waverec(coeffs,'db8').T
+        
+def Mod(BE, BO, components): 
+    ModE = []; StatesE = []; StatesO = [];
+    for j in range(np.shape(BE)[0]):
+        mode = hmm.GaussianHMM(n_components=2, tol=4, verbose=True)
+        #mode = hmm.GaussianHMM(n_components=components,n_iter=10000)
+        B = np.concatenate([BE[j],BO[j]])
+        mode.fit([B[m] for m in range(np.shape(B)[0])])
+        tempE = np.asarray(np.hstack(mode.predict([(BE[j][m]) for m in range(np.shape(BE[j])[0])])));
+        #print(tempE)
+        tempO = np.asarray(np.hstack(mode.predict([(BO[j][m]) for m in range(np.shape(BO[j])[0])])));
+        ModE.append(mode)
+        StatesE.append(tempE)
+        StatesO.append(tempO)
+        #StatesO.append(tempE)
+    return ModE, StatesE, StatesO 
+
+
+def brutesolver(Lam, sig, BE,BO,coeffsE,coeffsO,e,o,j,val,G, t, SE,SO,state):
+    #function to evaluate
+    V = []
+    mini = 1000000000000000000
+    i = 0
+    p = [val[j][it] for it in range(np.shape(val[j])[0])]
+    jval = np.append([p],[G,1.5*G,2*G])
+    for test in jval:
+        if t == 0:
+            temp = GBins(test, Lam, BE, BO, coeffsE, coeffsO, e, o, j)
+        elif t == 1:
+            temp = GBinsL(test, Lam, BE, BO, coeffsE, coeffsO, e, o, j)
+        elif t == 2:
+            temp = GBinsH(test, Lam, BE, BO, coeffsE, coeffsO, e, o, j, val, G, SE, SO, state)
+        if temp <= mini : 
+            mini = temp
+            mini_x = test
+    return mini_x, mini
+
+
+def Bins(coeffsE, coeffsO):
+    BE = []; BO = []; Mod = []
+    Val = []
+    for j in range(1,np.shape(coeffsE)[0]):
+        valE = []; valO = [];
+        j_length = np.size(coeffsE[j])
+        w = int(np.round(np.log(np.size(coeffsE[j]))))
+        BlocksE = []; BlocksO = []
+        for i in range(0,j_length,w):
+            if (i+w)>j_length:
+                start = i-((i+w)-j_length)
+                BlocksE.append(np.asarray(coeffsE[j][start:start+w]))
+                BlocksO.append(np.asarray(coeffsO[j][start:start+w]))
+            else:
+                BlocksE.append(np.asarray(coeffsE[j][i:i+w]))
+                BlocksO.append(np.asarray(coeffsO[j][i:i+w]))
+            valE.append(np.sum(np.abs(coeffsE[j][i:i+w])))
+            valO.append(np.sum(np.abs(coeffsO[j][i:i+w])))
+        Val.append(np.sort(np.hstack([valE, valO])))
+        BE.append(BlocksE)
+        BO.append(BlocksO)
+    return BE, BO, Val
+
+def Split1D(signal):
+    E = signal[::2]
+    O = signal[1::2]
+    return E, O;
+
+def GBinsL(test, Lam, BE, BO, coeffsE, coeffsO, e, o, j):
+    Lg = test
+    for p in range(3,-1,-1):
+        BEn = copy.deepcopy(BE); BOn = copy.deepcopy(BO);
+        if p == j:
+            for block in range(np.shape(BE[p])[0]):
+                if np.sum(BEn[p][block]**2)<Lg:
+                    BEn[p][block]=0*BEn[p][block]
+                if np.sum(BOn[p][block]**2)<Lg:
+                    BOn[p][block]=0*BOn[p][block]
+            flatE = np.hstack(BEn[p])
+            flatO = np.hstack(BOn[p])
+            diff = np.size(flatE)-np.size(coeffsE[p+1])
+            if diff>0:
+                flatE = flatE[:(np.size(flatE)-diff)]
+                flatO = flatO[:(np.size(flatO)-diff)]
+            coeffsE[p+1] = flatE
+            coeffsO[p+1] = flatO
+        else:
+            for block in range(np.shape(BE[p])[0]):
+                if np.sum(BEn[p][block]**2)<Lam[j]:
+                    BEn[p][block]=0*BEn[p][block]
+                if np.sum(BOn[p][block]**2)<Lam[j]:
+                    BOn[p][block]=0*BOn[p][block]
+            flatE = np.hstack(BEn[p])
+            flatO = np.hstack(BOn[p])
+            diff = np.size(flatE)-np.size(coeffsE[p+1])
+            if diff>0:
+                flatE = flatE[:(np.size(flatE)-diff)]
+                flatO = flatO[:(np.size(flatO)-diff)]
+            coeffsE[p+1] = flatE
+            coeffsO[p+1] = flatO
+    rE = pywt.waverec(coeffsE,'db8'); rO = pywt.waverec(coeffsO,'db8')
+    ORec = [np.mean(rE[i:i+2]) for i in range(np.size(rO)-1)]; ERec = [np.mean(rO[i:i+2]) for i in range(np.size(rO)-1)]
+    ERec = np.asarray(ERec); ORec = np.asarray(ORec)
+    SQt = .5*(np.sum((ORec-o[:np.size(o)-1])**2)+np.sum((ERec-e[1:])**2)) + .5*(np.sum((ERec-ORec)**2))
+    return SQt
+
+def GBins(test, Lam, BE, BO, coeffsE, coeffsO, e, o, j):
+    Lg = test
+    for p in range(3,-1,-1):
+        BEn = copy.deepcopy(BE); BOn = copy.deepcopy(BO);
+        if j<p:
+            for block in range(np.shape(BE[p])[0]):
+                if np.sum(BEn[p][block]**2)<Lam[j]:
+                    BEn[p][block]=0*BEn[p][block]
+                if np.sum(BOn[p][block]**2)<Lam[j]:
+                    BOn[p][block]=0*BOn[p][block]
+            flatE = np.hstack(BEn[p])
+            flatO = np.hstack(BOn[p])
+            diff = np.size(flatE)-np.size(coeffsE[p+1])
+            if diff>0:
+                flatE = flatE[:(np.size(flatE)-diff)]
+                flatO = flatO[:(np.size(flatO)-diff)]
+            coeffsE[p+1] = flatE
+            coeffsO[p+1] = flatO
+        elif p<=j:
+            for block in range(np.shape(BE[p])[0]):
+                if np.sum(BEn[p][block]**2)<Lg:
+                    BEn[p][block]=0*BEn[p][block]
+                if np.sum(BOn[p][block]**2)<Lg:
+                    BOn[p][block]=0*BOn[p][block]
+            flatE = np.hstack(BEn[p])
+            flatO = np.hstack(BOn[p])
+            diff = np.size(flatE)-np.size(coeffsE[p+1])
+            if diff>0:
+                flatE = flatE[:(np.size(flatE)-diff)]
+                flatO = flatO[:(np.size(flatO)-diff)]
+            coeffsE[p+1] = flatE
+            coeffsO[p+1] = flatO
+    rE = pywt.waverec(coeffsE,'db8'); rO = pywt.waverec(coeffsO,'db8')
+    ORec = [np.mean(rE[i:i+2]) for i in range(np.size(rO)-1)]; ERec = [np.mean(rO[i:i+2]) for i in range(np.size(rO)-1)]
+    ERec = np.asarray(ERec); ORec = np.asarray(ORec)
+    SQt = .5*(np.sum((ORec-o[:np.size(o)-1])**2)+np.sum((ERec-e[1:])**2)) + .5*(np.sum((ERec-ORec)**2))
+    return SQt
+
+def GBinsH(L, Lam, BE, BO, coeffsE, coeffsO, e, o, j, val, G, SE, SO, state):
+    H1 = L
+    for p in range(j,-1,-1):
+        BEn = copy.deepcopy(BE); BOn = copy.deepcopy(BO);
+        if p == j:
+            for block in range(np.shape(BE[p])[0]):
+                if state == 0:
+                    if SE[p][block] == 0:
+                        if np.sum(np.abs(BEn[p][block]))<H1:
+                            BEn[p][block]=0*BEn[p][block]
+                    if SO[p][block] == 0:
+                        if np.sum(np.abs(BOn[p][block]))<H1:
+                            BOn[p][block]=0*BOn[p][block]
+                    if SE[p][block] == 1:
+                        BEn[p][block]=0*BEn[p][block]
+                    if SO[p][block] == 1:
+                        BOn[p][block]=0*BOn[p][block]      
+                elif state == 1:
+                    if SE[p][block] == 1:
+                        if np.sum(np.abs(BEn[p][block]))<H1:
+                            BEn[p][block]=0*BEn[p][block]
+                    if SO[p][block] == 1:
+                        if np.sum(np.abs(BOn[p][block]))<H1:
+                            BOn[p][block]=0*BOn[p][block]
+                    if SE[p][block] == 0:
+                        BEn[p][block]=0*BEn[p][block]
+                    if SO[p][block] == 0:
+                        BOn[p][block]=0*BOn[p][block]         
+            flatE = np.hstack(BEn[p])
+            flatO = np.hstack(BOn[p])
+            diff = np.size(flatE)-np.size(coeffsE[p+1])
+            if diff>0:
+                flatE = flatE[:(np.size(flatE)-diff)]
+                flatO = flatO[:(np.size(flatO)-diff)]
+            coeffsE[p+1] = flatE
+            coeffsO[p+1] = flatO
+    
+    rE = pywt.waverec(coeffsE,'db8'); rO = pywt.waverec(coeffsO,'db8')
+    ORec = [np.mean(rE[i:i+2]) for i in range(np.size(rO)-1)]; ERec = [np.mean(rO[i:i+2]) for i in range(np.size(rO)-1)]
+    ERec = np.asarray(ERec); ORec = np.asarray(ORec)
+    SQt = .5*(np.sum((ORec-o[:np.size(o)-1])**2)+np.sum((ERec-e[1:])**2)) + .5*(np.sum((ERec-ORec)**2))
+    return SQt
